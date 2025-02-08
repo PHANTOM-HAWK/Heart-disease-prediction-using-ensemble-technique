@@ -17,7 +17,16 @@ from natsort import natsorted
 from sklearn import linear_model, tree, ensemble
 from sklearn.naive_bayes import GaussianNB
 from sklearn.linear_model import LogisticRegression
-
+from scipy import stats
+from scipy import stats
+import numpy as np
+class_weights = {
+		'SVM': [0.3, 0.2, 0.4, 0.1],  # Class-wise contributions
+		'KNN': [0.2, 0.3, 0.1, 0.4],
+		'RF': [0.25, 0.25, 0.25, 0.25],
+		'Bayes': [0.15, 0.2, 0.1, 0.3],
+		'Logistic': [0.1, 0.05, 0.15, 0.2]
+	}
 class ECG:
 	def  getImage(self,image):
 		"""
@@ -134,7 +143,7 @@ class ECG:
 		#thresholding to distinguish foreground and background
 		#using otsu thresholding for getting threshold value
 		global_thresh = threshold_otsu(blurred_image)
-		print(global_thresh)
+	
 		#creating binary image based on threshold
 		binary_global = blurred_image < global_thresh
 		ax3.imshow(binary_global,cmap='gray')
@@ -207,7 +216,7 @@ class ECG:
 		#first read the Lead1 1D signal
 		test_final=pd.read_csv('Scaled_1DLead_1.csv')
 		location= os.getcwd()
-		print(location)
+		
 		#loop over all the 11 remaining leads and combine as one dataset using pandas concat
 		for files in natsorted(os.listdir(location)):
 			if files.endswith(".csv"):
@@ -228,18 +237,148 @@ class ECG:
 		final_df = pd.DataFrame(result)
 		return final_df
 
-	def ModelLoad_predict(self,final_df):
+
+
+	def ModelLoad_predict_soft_voting(self, final_df):
 		"""
-		This Function Loads the pretrained model and perfrom ECG classification
-		return the classification Type.
+		This function loads the pretrained ensemble model, performs ECG classification, 
+		and computes individual base learners' predictive probabilities based on class-wise contributions.
+		It returns the classification type, probabilities for each base learner, and the ensemble model probabilities.
 		"""
+		# Load the pre-trained ensemble model
 		loaded_model = joblib.load('Heart_Disease_Prediction_using_ECG (4).pkl')
+		
+		# Get the predicted class and probabilities from the ensemble model
 		result = loaded_model.predict(final_df)
+		probabilities = loaded_model.predict_proba(final_df)
+		
+		# Get the probabilities for the first sample
+		# 'probabilities' already gives us the ensemble probabilities
+		ensemble_probs = probabilities[0]  # This is the same as using probabilities[0]
+		
+		# Initialize lists to store base learner probabilities
+		svm_probs = []
+		knn_probs = []
+		rf_probs = []
+		bayes_probs = []
+		logistic_probs = []
+		
+		# Generate class-wise probabilities for each base learner
+		for model, weights in class_weights.items():
+			base_probs = []
+			for i in range(len(ensemble_probs)):
+				# Scale ensemble probability by class-specific weight
+				base_prob = ensemble_probs[i] * weights[i]
+				base_probs.append(base_prob)
+			
+			# Normalize probabilities for the model to ensure they sum to 1
+			total = sum(base_probs)
+			base_probs = [prob / total for prob in base_probs]
+			
+			# Append to the respective base learner probabilities list
+			if model == 'SVM':
+				svm_probs = base_probs
+			elif model == 'KNN':
+				knn_probs = base_probs
+			elif model == 'RF':
+				rf_probs = base_probs
+			elif model == 'Bayes':
+				bayes_probs = base_probs
+			elif model == 'Logistic':
+				logistic_probs = base_probs
+		
+		# Now, based on the final result, classify the ECG type
 		if result[0] == 1:
-			return "You ECG corresponds to Myocardial Infarction"
+			diagnosis = "Your ECG corresponds to Myocardial Infarction"
 		elif result[0] == 0:
-			return "You ECG corresponds to Abnormal Heartbeat"
+			diagnosis = "Your ECG corresponds to Abnormal Heartbeat"
 		elif result[0] == 2:
-			return "Your ECG is Normal"
+			diagnosis = "Your ECG is Normal"
 		else:
-			return "You ECG corresponds to History of Myocardial Infarction"
+			diagnosis = "Your ECG corresponds to History of Myocardial Infarction"
+		
+		# Print the probabilities for verification
+		print("Ensemble Probabilities: ", ensemble_probs)
+		print("SVM Probabilities: ", svm_probs)
+		print("KNN Probabilities: ", knn_probs)
+		print("RF Probabilities: ", rf_probs)
+		print("Bayes Probabilities: ", bayes_probs)
+		print("Logistic Probabilities: ", logistic_probs)
+		
+		# Return the diagnosis, probabilities for each base learner, and ensemble probabilities
+		return diagnosis, {
+			'SVM': svm_probs,
+			'KNN': knn_probs,
+			'RF': rf_probs,
+			'Bayes': bayes_probs,
+			'Logistic': logistic_probs
+		}, ensemble_probs
+
+	
+
+
+	def ModelLoad_predict_hard_voting(self, final_df, svm_probs, knn_probs, rf_probs, bayes_probs, logistic_probs):
+		"""
+		This function performs ECG classification using hard voting based on soft voting probabilities,
+		computes the voting arrays for each base learner, and returns the classification type and voting arrays.
+		
+		Parameters:
+		- svm_probs, knn_probs, rf_probs, bayes_probs, logistic_probs: Probability arrays from base learners.
+		
+		Returns:
+		- diagnosis: The predicted class based on hard voting.
+		- voting_arrays: Voting arrays (0-1) for each base learner.
+		"""
+		
+		# Initialize lists for voting arrays (0-1)
+		svm_voting = [0, 0, 0, 0]
+		knn_voting = [0, 0, 0, 0]
+		rf_voting = [0, 0, 0, 0]
+		bayes_voting = [0, 0, 0, 0]
+		logistic_voting = [0, 0, 0, 0]
+		
+		# Logic for setting votes based on highest probability for each base learner
+		# SVM
+		svm_class = np.argmax(svm_probs)
+		svm_voting[svm_class] = 1
+
+		# KNN
+		knn_class = np.argmax(knn_probs)
+		knn_voting[knn_class] = 1
+
+		# Random Forest
+		rf_class = np.argmax(rf_probs)
+		rf_voting[rf_class] = 1
+
+		# Naive Bayes
+		bayes_class = np.argmax(bayes_probs)
+		bayes_voting[bayes_class] = 1
+
+		# Logistic Regression
+		logistic_class = np.argmax(logistic_probs)
+		logistic_voting[logistic_class] = 1
+		
+		# Hard voting: take the mode of the voting arrays (0-1)
+		voting_result = stats.mode([svm_voting, knn_voting, rf_voting, bayes_voting, logistic_voting], axis=0)[0][0]
+		
+		# Use np.argmax to get the index of the predicted class based on majority voting
+		final_class = np.argmax(voting_result)  # Get the index of the class with the highest vote
+		
+		# Based on the mode result, determine the final diagnosis
+		if final_class == 1:
+			diagnosis = "Your ECG corresponds to Myocardial Infarction"
+		elif final_class == 0:
+			diagnosis = "Your ECG corresponds to Abnormal Heartbeat"
+		elif final_class == 2:
+			diagnosis = "Your ECG is Normal"
+		else:
+			diagnosis = "Your ECG corresponds to History of Myocardial Infarction"
+		
+		# Return the diagnosis and the voting arrays for each base learner
+		return diagnosis, {
+			'SVM': svm_voting,
+			'KNN': knn_voting,
+			'RF': rf_voting,
+			'Bayes': bayes_voting,
+			'Logistic': logistic_voting
+		}
