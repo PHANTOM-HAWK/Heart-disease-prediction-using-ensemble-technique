@@ -7,7 +7,7 @@ rf_probs = None
 bayes_probs = None
 logistic_probs = None
 st.set_page_config(
-    page_title="Cardiovascular Disease Prediction",
+    page_title="Cardiovascular Disease Prediction Ensamble",
     page_icon="📈",
     layout="wide"
 )
